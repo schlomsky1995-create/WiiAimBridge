@@ -75,7 +75,7 @@ class MainActivity : Activity() {
     private fun scanUsb() {
         val devices = usb.deviceList.values.toList()
         if (devices.isEmpty()) {
-            append("Kein USB-Gerät gefunden. Prüfe Dock, USB-C-Verbindung und DolphinBar-Modus 4.")
+            append("Kein USB-Gerät gefunden. Prüfe Dock, USB-C-Verbindung und DolphinBar.")
             return
         }
         append("USB-Geräte gefunden: ${devices.size}")
@@ -83,9 +83,10 @@ class MainActivity : Activity() {
             append("• ${d.deviceName}  VID:PID %04X:%04X  Interfaces: ${d.interfaceCount}".format(d.vendorId, d.productId))
             for (i in 0 until d.interfaceCount) {
                 val intf = d.getInterface(i)
+                append("  IF$i Klasse=${intf.interfaceClass} Subklasse=${intf.interfaceSubclass} Protokoll=${intf.interfaceProtocol}")
                 for (e in 0 until intf.endpointCount) {
                     val ep = intf.getEndpoint(e)
-                    append("  IF$i EP$e ${if (ep.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT"} Typ=${ep.type} Paket=${ep.maxPacketSize}")
+                    append("  IF$i EP$e ${if (ep.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT"} Adr=0x%02X Typ=${ep.type} Paket=${ep.maxPacketSize} Intervall=${ep.interval}".format(ep.address))
                 }
             }
         }
@@ -133,23 +134,11 @@ class MainActivity : Activity() {
             conn.close(); append("USB-Interface konnte nicht exklusiv geöffnet werden."); return
         }
         connection = conn
-        var outputEndpoint: UsbEndpoint? = null
-        for (e in 0 until chosenInterface.endpointCount) {
-            val ep = chosenInterface.getEndpoint(e)
-            if (ep.direction == UsbConstants.USB_DIR_OUT &&
-                (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT || ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK)) {
-                outputEndpoint = ep
-                break
-            }
-        }
-        append("Verbunden: Interface ${chosenInterface.id}, IN-Endpunkt ${chosenEndpoint.address}, OUT=${outputEndpoint?.address ?: "FEHLT"}.")
-        if (outputEndpoint != null) {
-            append("Sende Wii-Remote-IR-Initialisierung…")
-            initializeIrCamera(conn, outputEndpoint!!)
-        } else {
-            append("WARNUNG: Kein OUT-Endpunkt am gewählten Interface; IR-Initialisierung über USB nicht möglich.")
-        }
-        append("Lese Rohdaten. Erwartet wird Report 0x37 mit 22 Bytes.")
+        append("Verbunden: Interface ${chosenInterface.id}, Klasse=${chosenInterface.interfaceClass}, " +
+            "Subklasse=${chosenInterface.interfaceSubclass}, Protokoll=${chosenInterface.interfaceProtocol}.")
+        append("IN-Endpunkt Adr=0x%02X, Typ=${chosenEndpoint.type}, Paket=${chosenEndpoint.maxPacketSize}.".format(chosenEndpoint.address))
+        append("Diagnosemodus: Wir senden absichtlich KEINE Wii-Remote-IR-Befehle, da kein OUT-Endpunkt vorhanden ist.")
+        append("Lese jetzt rohe HID-Eingabepakete. Bitte Wii-Remote bewegen und B/Abzug drücken.")
         startReader(conn, chosenEndpoint)
     }
 
@@ -194,7 +183,7 @@ class MainActivity : Activity() {
                     val hex = packet.joinToString(" ") { "%02X".format(it.toInt() and 0xff) }
                     runOnUiThread {
                         processReport(packet)
-                        if (count <= 12 || count % 60 == 0) append("USB #$count ($n B): $hex")
+                        if (count <= 40 || count % 100 == 0) append("USB #$count ($n B): $hex")
                     }
                 }
             }
@@ -204,7 +193,10 @@ class MainActivity : Activity() {
     private fun processReport(p: ByteArray) {
         if (p.isEmpty()) return
         val id = p[0].toInt() and 0xff
-        if (id != 0x37 || p.size < 22) return
+        if (id != 0x37 || p.size < 22) {
+            status.text = "USB-Daten empfangen: ${p.size} Byte, erstes Byte 0x%02X.\nNoch kein bekannter IR-Report 0x37. Rohdaten stehen im Protokoll.".format(id)
+            return
+        }
         val dots = decodeBasicIr(p, 6)
         val valid = dots.filterNotNull()
         if (valid.isNotEmpty()) {
