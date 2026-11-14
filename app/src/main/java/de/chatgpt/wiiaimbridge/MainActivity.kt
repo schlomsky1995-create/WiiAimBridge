@@ -115,31 +115,38 @@ class MainActivity : Activity() {
         stopReader()
         val conn = usb.openDevice(device)
         if (conn == null) { append("USB-Gerät konnte nicht geöffnet werden."); return }
-        var chosenInterface: UsbInterface? = null
-        var chosenEndpoint: UsbEndpoint? = null
-        loop@ for (i in 0 until device.interfaceCount) {
-            val intf = device.getInterface(i)
+
+        val interfaces = (0 until device.interfaceCount).map { device.getInterface(it) }
+        val claimed = mutableListOf<UsbInterface>()
+        for (intf in interfaces) {
+            if (conn.claimInterface(intf, true)) {
+                claimed.add(intf)
+                append("Interface ${intf.id} geöffnet (Klasse=${intf.interfaceClass}, Subklasse=${intf.interfaceSubclass}, Protokoll=${intf.interfaceProtocol}).")
+            } else {
+                append("Interface ${intf.id} konnte nicht geöffnet werden.")
+            }
+        }
+
+        val endpoints = mutableListOf<Pair<UsbInterface, UsbEndpoint>>()
+        for (intf in claimed) {
             for (e in 0 until intf.endpointCount) {
                 val ep = intf.getEndpoint(e)
                 if (ep.direction == UsbConstants.USB_DIR_IN &&
                     (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT || ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK)) {
-                    chosenInterface = intf; chosenEndpoint = ep; break@loop
+                    endpoints.add(intf to ep)
+                    append("Lese-Kanal: IF${intf.id}, Adresse=0x%02X, Typ=${ep.type}, Paket=${ep.maxPacketSize}, Intervall=${ep.interval}.".format(ep.address))
                 }
             }
         }
-        if (chosenInterface == null || chosenEndpoint == null) {
-            conn.close(); append("Kein Interrupt-/Bulk-IN-Endpunkt gefunden. Siehe USB-Diagnose oben."); return
-        }
-        if (!conn.claimInterface(chosenInterface, true)) {
-            conn.close(); append("USB-Interface konnte nicht exklusiv geöffnet werden."); return
+        if (endpoints.isEmpty()) {
+            conn.close()
+            append("Kein Interrupt-/Bulk-IN-Kanal gefunden.")
+            return
         }
         connection = conn
-        append("Verbunden: Interface ${chosenInterface.id}, Klasse=${chosenInterface.interfaceClass}, " +
-            "Subklasse=${chosenInterface.interfaceSubclass}, Protokoll=${chosenInterface.interfaceProtocol}.")
-        append("IN-Endpunkt Adr=0x%02X, Typ=${chosenEndpoint.type}, Paket=${chosenEndpoint.maxPacketSize}.".format(chosenEndpoint.address))
-        append("Diagnosemodus: Wir senden absichtlich KEINE Wii-Remote-IR-Befehle, da kein OUT-Endpunkt vorhanden ist.")
-        append("Lese jetzt rohe HID-Eingabepakete. Bitte Wii-Remote bewegen und B/Abzug drücken.")
-        startReader(conn, chosenEndpoint)
+        append("Diagnose: ${claimed.size} Interfaces geöffnet, ${endpoints.size} Eingangs-Kanäle werden nacheinander geprüft.")
+        append("Keine IR-Befehle werden gesendet. Bewege die Wii-Remote und drücke B.")
+        startReader(conn, endpoints)
     }
 
     private fun initializeIrCamera(conn: UsbDeviceConnection, endpoint: UsbEndpoint) {
@@ -170,22 +177,36 @@ class MainActivity : Activity() {
         send(byteArrayOf(0x12, 0x00, 0x37), "Data report 0x37")
     }
 
-    private fun startReader(conn: UsbDeviceConnection, endpoint: UsbEndpoint) {
+    private fun startReader(conn: UsbDeviceConnection, endpoints: List<Pair<UsbInterface, UsbEndpoint>>) {
         reading.set(true)
         reader = thread(name = "WiiAim-USB-reader") {
-            val buffer = ByteArray(maxOf(endpoint.maxPacketSize, 32))
-            var count = 0
+            val counts = IntArray(endpoints.size)
+            var total = 0
             while (reading.get()) {
-                val n = conn.bulkTransfer(endpoint, buffer, buffer.size, 150)
-                if (n > 0) {
-                    val packet = buffer.copyOf(n)
-                    count++
-                    val hex = packet.joinToString(" ") { "%02X".format(it.toInt() and 0xff) }
-                    runOnUiThread {
-                        processReport(packet)
-                        if (count <= 40 || count % 100 == 0) append("USB #$count ($n B): $hex")
+                for ((index, pair) in endpoints.withIndex()) {
+                    if (!reading.get()) break
+                    val (intf, endpoint) = pair
+                    val buffer = ByteArray(maxOf(endpoint.maxPacketSize, 32))
+                    val n = conn.bulkTransfer(endpoint, buffer, buffer.size, 35)
+                    if (n > 0) {
+                        val packet = buffer.copyOf(n)
+                        counts[index]++
+                        total++
+                        val hex = packet.joinToString(" ") { "%02X".format(it.toInt() and 0xff) }
+                        runOnUiThread {
+                            processReport(packet)
+                            if (total <= 20 || total % 100 == 0) {
+                                append("Empfang IF${intf.id}/0x%02X: ${n} Byte – ${hex}".format(endpoint.address))
+                            }
+                        }
                     }
                 }
+            }
+            runOnUiThread {
+                val summary = endpoints.mapIndexed { i, pair ->
+                    "IF${pair.first.id}/0x%02X: ${counts[i]} Pakete".format(pair.second.address)
+                }.joinToString("\n")
+                append("USB-Test beendet.\n$summary")
             }
         }
     }
