@@ -31,6 +31,7 @@ class MainActivity : Activity() {
 
     private lateinit var usb: UsbManager
     private lateinit var status: TextView
+    private lateinit var logView: TextView
     private lateinit var aimView: AimView
     private var connection: UsbDeviceConnection? = null
     private var reader: Thread? = null
@@ -61,13 +62,16 @@ class MainActivity : Activity() {
         val title = TextView(this).apply { text = "WiiAimBridge – IR-Test"; textSize = 22f }
         aimView = AimView(this)
         status = TextView(this).apply { textSize = 14f; text = "DolphinBar anschließen und „USB suchen“ drücken." }
+        logView = TextView(this).apply { textSize = 12f; text = "USB-Protokoll erscheint hier …" }
+        val logScroll = ScrollView(this).apply { addView(logView) }
         val search = Button(this).apply { text = "USB suchen"; setOnClickListener { scanUsb() } }
         val stop = Button(this).apply { text = "Verbindung stoppen"; setOnClickListener { stopReader(); append("Verbindung gestoppt.") } }
         root.addView(title)
         root.addView(aimView, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(search)
         root.addView(stop)
-        root.addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(status, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(logScroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
         scanUsb()
     }
@@ -266,7 +270,7 @@ class MainActivity : Activity() {
     private fun append(line: String) {
         logText.append(line).append('\n')
         if (logText.length > 6500) logText.delete(0, logText.length - 5000)
-        if (::status.isInitialized) status.text = logText.toString()
+        if (::logView.isInitialized) logView.text = logText.toString()
     }
 
     private fun stopReader() {
