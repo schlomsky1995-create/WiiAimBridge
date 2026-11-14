@@ -89,20 +89,25 @@ class MainActivity : Activity() {
                 }
             }
         }
-        // Prefer the Mayflash/DolphinBar ID if present, otherwise try the first device with an IN endpoint.
-        val device = devices.firstOrNull { it.vendorId == 0x0079 && it.productId == 0x1803 }
-            ?: devices.firstOrNull { d -> (0 until d.interfaceCount).any { i ->
-                val intf = d.getInterface(i)
-                (0 until intf.endpointCount).any { intf.getEndpoint(it).direction == UsbConstants.USB_DIR_IN }
-            } }
-        if (device == null) { append("Kein Gerät mit IN-Endpunkt gefunden."); return }
-        lastDevice = device
-        if (usb.hasPermission(device)) connectDevice(device) else {
-            append("Frage Android nach USB-Zugriff für ${device.deviceName} …")
-            val pi = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION).setPackage(packageName),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
-            usb.requestPermission(device, pi)
-        }
+        // Do not guess which USB device is the DolphinBar. Let the user select it.
+        val labels = devices.map { d ->
+            "${d.deviceName}  VID:PID %04X:%04X  IF:%d".format(d.vendorId, d.productId, d.interfaceCount)
+        }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("USB-Gerät auswählen")
+            .setItems(labels) { _, which ->
+                val device = devices[which]
+                lastDevice = device
+                append("Ausgewählt: ${labels[which]}")
+                if (usb.hasPermission(device)) connectDevice(device) else {
+                    append("Frage Android nach USB-Zugriff für ${device.deviceName} …")
+                    val pi = PendingIntent.getBroadcast(this, 0, Intent(ACTION_USB_PERMISSION).setPackage(packageName),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                    usb.requestPermission(device, pi)
+                }
+            }
+            .setNegativeButton("Abbrechen", null)
+            .show()
     }
 
     private fun connectDevice(device: UsbDevice) {
