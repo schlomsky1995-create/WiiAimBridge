@@ -133,9 +133,52 @@ class MainActivity : Activity() {
             conn.close(); append("USB-Interface konnte nicht exklusiv geöffnet werden."); return
         }
         connection = conn
-        append("Verbunden: Interface ${chosenInterface.id}, IN-Endpunkt ${chosenEndpoint.address}.")
-        append("Lese Rohdaten. Für IR-Erkennung wird ein Report 0x37 erwartet.")
+        var outputEndpoint: UsbEndpoint? = null
+        for (e in 0 until chosenInterface.endpointCount) {
+            val ep = chosenInterface.getEndpoint(e)
+            if (ep.direction == UsbConstants.USB_DIR_OUT &&
+                (ep.type == UsbConstants.USB_ENDPOINT_XFER_INT || ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK)) {
+                outputEndpoint = ep
+                break
+            }
+        }
+        append("Verbunden: Interface ${chosenInterface.id}, IN-Endpunkt ${chosenEndpoint.address}, OUT=${outputEndpoint?.address ?: "FEHLT"}.")
+        if (outputEndpoint != null) {
+            append("Sende Wii-Remote-IR-Initialisierung…")
+            initializeIrCamera(conn, outputEndpoint!!)
+        } else {
+            append("WARNUNG: Kein OUT-Endpunkt am gewählten Interface; IR-Initialisierung über USB nicht möglich.")
+        }
+        append("Lese Rohdaten. Erwartet wird Report 0x37 mit 22 Bytes.")
         startReader(conn, chosenEndpoint)
+    }
+
+    private fun initializeIrCamera(conn: UsbDeviceConnection, endpoint: UsbEndpoint) {
+        fun send(bytes: ByteArray, label: String) {
+            val sent = conn.bulkTransfer(endpoint, bytes, bytes.size, 1000)
+            append("$label: USB OUT $sent/${bytes.size} Byte")
+            try { Thread.sleep(100) } catch (_: InterruptedException) {}
+        }
+        fun registerWrite(offset: Int, data: ByteArray): ByteArray {
+            val report = ByteArray(22)
+            report[0] = 0x16
+            report[1] = 0x04
+            report[2] = 0xB0.toByte()
+            report[3] = 0x00
+            report[4] = offset.toByte()
+            report[5] = data.size.toByte()
+            data.copyInto(report, 6)
+            return report
+        }
+        // Wii Remote IR setup sequence adapted from the dbar4gun driver.
+        send(byteArrayOf(0x13, 0x04), "IR Set 1")
+        send(byteArrayOf(0x1A, 0x04), "IR Set 2")
+        send(byteArrayOf(0x16, 0x04, 0xB0.toByte(), 0x00, 0x30, 0x01, 0x08), "IR enable")
+        send(registerWrite(0x00, byteArrayOf(0, 0, 0, 0, 0, 0, 0x90.toByte(), 0, 0xC0.toByte())), "IR sensitivity 1")
+        send(registerWrite(0x1A, byteArrayOf(0x40, 0)), "IR sensitivity 2")
+        send(registerWrite(0x33, byteArrayOf(0x01)), "IR basic mode")
+        send(byteArrayOf(0x16, 0x04, 0xB0.toByte(), 0x00, 0x30, 0x01, 0x08), "IR enable final")
+        send(byteArrayOf(0x12, 0x00, 0x37), "Data report 0x37")
     }
 
     private fun startReader(conn: UsbDeviceConnection, endpoint: UsbEndpoint) {
@@ -161,7 +204,7 @@ class MainActivity : Activity() {
     private fun processReport(p: ByteArray) {
         if (p.isEmpty()) return
         val id = p[0].toInt() and 0xff
-        if (id != 0x37 || p.size < 16) return
+        if (id != 0x37 || p.size < 22) return
         val dots = decodeBasicIr(p, 6)
         val valid = dots.filterNotNull()
         if (valid.isNotEmpty()) {
